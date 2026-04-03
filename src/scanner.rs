@@ -215,14 +215,6 @@ pub fn scan_ports(show_all: bool) -> Vec<PortInfo> {
         let (ppid, stat, rss, _lstart, command) =
             ps_data.get(pid).cloned().unwrap_or((0, String::new(), 0, String::new(), String::new()));
 
-        let health = if stat.contains('Z') {
-            Health::Zombie
-        } else if ppid == 1 {
-            Health::Orphaned
-        } else {
-            Health::Healthy
-        };
-
         let cwd = cwd_map.get(pid).cloned().unwrap_or_default();
         let project_root = find_project_root(&cwd);
         let project = project_root
@@ -237,6 +229,17 @@ pub fn scan_ports(show_all: bool) -> Vec<PortInfo> {
             .unwrap_or((None, None));
 
         let framework = detect_framework(&command, &cwd, &project_root, &docker_image, &name.to_lowercase());
+
+        // Classify health — PPID 1 on macOS just means launched by launchd.
+        // Only flag as orphaned if it looks like a dev server process that
+        // lost its parent, not a legitimate daemon/app/service.
+        let health = if stat.contains('Z') {
+            Health::Zombie
+        } else if ppid == 1 && is_likely_orphaned_dev_process(&command, &name.to_lowercase()) {
+            Health::Orphaned
+        } else {
+            Health::Healthy
+        };
 
         let memory_mb = rss as f64 / 1024.0;
         let uptime = parse_uptime_from_pid(*pid);
@@ -349,6 +352,49 @@ fn is_system_app(name: &str) -> bool {
     // lsof truncates names to ~9 chars, so "ControlCenter" becomes "ControlCe"
     // Check both directions: app.contains(name_fragment) and name.contains(app)
     SYSTEM_APPS.iter().any(|app| name.contains(app) || app.starts_with(name))
+}
+
+/// Returns true only if a PPID-1 process looks like a dev server that lost its parent,
+/// NOT a legitimate daemon, app, or Homebrew-managed service.
+fn is_likely_orphaned_dev_process(command: &str, name: &str) -> bool {
+    let cmd_lower = command.to_lowercase();
+
+    // Known daemons / services managed by launchd or Homebrew — never orphaned
+    let known_daemons = [
+        "mysqld", "postgres", "redis-server", "redis-se", "mongod", "memcached",
+        "nginx", "httpd", "caddy", "traefik", "elasticsearch", "rabbitmq",
+        "grafana", "prometheus", "consul", "vault", "minio",
+    ];
+    for d in &known_daemons {
+        if name.starts_with(d) || cmd_lower.contains(d) {
+            return false;
+        }
+    }
+
+    // Anything under /Applications/ is a user app, not an orphan
+    if cmd_lower.contains("/applications/") {
+        return false;
+    }
+
+    // Homebrew services run from /opt/homebrew or /usr/local — not orphaned
+    if cmd_lower.contains("/opt/homebrew/") || cmd_lower.contains("/usr/local/cellar/") {
+        return false;
+    }
+
+    // If it looks like a dev server (node, python, ruby, go, cargo, etc.), it's suspicious
+    let dev_indicators = [
+        "node ", "python", "ruby", "java ", "beam.smp", "go ", "cargo",
+        "npm ", "npx ", "pnpm ", "bun ", "deno ",
+        "next", "vite", "webpack", "flask", "django", "rails", "uvicorn",
+    ];
+    for indicator in &dev_indicators {
+        if cmd_lower.contains(indicator) {
+            return true;
+        }
+    }
+
+    // Default: not orphaned — better to miss an orphan than kill a legit process
+    false
 }
 
 fn is_system_process(cmd: &str) -> bool {
@@ -739,4 +785,336 @@ fn parse_etime(etime: &str) -> Duration {
         _ => (0, 0, 0, 0),
     };
     Duration::from_secs(days * 86400 + hours * 3600 + minutes * 60 + seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_etime ──
+
+    #[test]
+    fn test_parse_etime_seconds() {
+        assert_eq!(parse_etime("00:45"), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn test_parse_etime_minutes_seconds() {
+        assert_eq!(parse_etime("05:30"), Duration::from_secs(5 * 60 + 30));
+    }
+
+    #[test]
+    fn test_parse_etime_hours() {
+        assert_eq!(parse_etime("02:15:30"), Duration::from_secs(2 * 3600 + 15 * 60 + 30));
+    }
+
+    #[test]
+    fn test_parse_etime_days() {
+        assert_eq!(parse_etime("3-04:15:30"), Duration::from_secs(3 * 86400 + 4 * 3600 + 15 * 60 + 30));
+    }
+
+    #[test]
+    fn test_parse_etime_empty() {
+        assert_eq!(parse_etime(""), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_parse_etime_garbage() {
+        assert_eq!(parse_etime("not-a-time"), Duration::from_secs(0));
+    }
+
+    // ── is_system_app ──
+
+    #[test]
+    fn test_system_app_direct_match() {
+        assert!(is_system_app("spotify"));
+        assert!(is_system_app("chrome"));
+        assert!(is_system_app("slack"));
+    }
+
+    #[test]
+    fn test_system_app_contains_match() {
+        assert!(is_system_app("google chrome helper"));
+    }
+
+    #[test]
+    fn test_system_app_truncated_lsof_name() {
+        // lsof truncates "controlcenter" to "controlce"
+        assert!(is_system_app("controlce"));
+        // "rapportd" matches directly
+        assert!(is_system_app("rapportd"));
+    }
+
+    #[test]
+    fn test_not_system_app() {
+        assert!(!is_system_app("node"));
+        assert!(!is_system_app("python3"));
+        assert!(!is_system_app("mysqld"));
+        assert!(!is_system_app("redis-server"));
+        assert!(!is_system_app("cargo"));
+    }
+
+    // ── is_likely_orphaned_dev_process ──
+
+    #[test]
+    fn test_warp_not_orphaned() {
+        assert!(!is_likely_orphaned_dev_process(
+            "/Applications/Warp.app/Contents/MacOS/stable",
+            "stable"
+        ));
+    }
+
+    #[test]
+    fn test_mysql_not_orphaned() {
+        assert!(!is_likely_orphaned_dev_process(
+            "/opt/homebrew/opt/mysql@8.0/bin/mysqld --basedir=/opt/homebrew/opt/mysql@8.0",
+            "mysqld"
+        ));
+    }
+
+    #[test]
+    fn test_redis_not_orphaned() {
+        assert!(!is_likely_orphaned_dev_process(
+            "/opt/homebrew/opt/redis/bin/redis-server 127.0.0.1:6379",
+            "redis-ser"
+        ));
+    }
+
+    #[test]
+    fn test_homebrew_service_not_orphaned() {
+        assert!(!is_likely_orphaned_dev_process(
+            "/opt/homebrew/bin/postgres -D /opt/homebrew/var/postgres",
+            "postgres"
+        ));
+    }
+
+    #[test]
+    fn test_any_application_not_orphaned() {
+        assert!(!is_likely_orphaned_dev_process(
+            "/Applications/SomeApp.app/Contents/MacOS/someapp",
+            "someapp"
+        ));
+    }
+
+    #[test]
+    fn test_node_dev_server_is_orphaned() {
+        assert!(is_likely_orphaned_dev_process(
+            "node /Users/dev/myapp/node_modules/.bin/next dev",
+            "node"
+        ));
+    }
+
+    #[test]
+    fn test_python_flask_is_orphaned() {
+        assert!(is_likely_orphaned_dev_process(
+            "python3 -m flask run",
+            "python3"
+        ));
+    }
+
+    #[test]
+    fn test_npm_run_dev_is_orphaned() {
+        assert!(is_likely_orphaned_dev_process(
+            "npm run dev",
+            "npm"
+        ));
+    }
+
+    #[test]
+    fn test_cargo_run_is_orphaned() {
+        assert!(is_likely_orphaned_dev_process(
+            "cargo run --release",
+            "cargo"
+        ));
+    }
+
+    // ── detect_framework ──
+
+    #[test]
+    fn test_detect_mysql() {
+        let result = detect_framework(
+            "/opt/homebrew/opt/mysql@8.0/bin/mysqld --basedir=/opt/homebrew/opt/mysql@8.0",
+            "",
+            &None,
+            &None,
+            "mysqld",
+        );
+        assert_eq!(result, "MySQL");
+    }
+
+    #[test]
+    fn test_detect_redis() {
+        let result = detect_framework(
+            "/opt/homebrew/opt/redis/bin/redis-server 127.0.0.1:6379",
+            "",
+            &None,
+            &None,
+            "redis-ser",
+        );
+        assert_eq!(result, "Redis");
+    }
+
+    #[test]
+    fn test_detect_nextjs_from_command() {
+        let result = detect_framework(
+            "node /app/node_modules/.bin/next dev",
+            "",
+            &None,
+            &None,
+            "node",
+        );
+        assert_eq!(result, "Next.js");
+    }
+
+    #[test]
+    fn test_detect_vite_from_command() {
+        let result = detect_framework(
+            "node /app/node_modules/.bin/vite",
+            "",
+            &None,
+            &None,
+            "node",
+        );
+        assert_eq!(result, "Vite");
+    }
+
+    #[test]
+    fn test_detect_django_from_command() {
+        let result = detect_framework(
+            "python manage.py runserver (django)",
+            "",
+            &None,
+            &None,
+            "python",
+        );
+        assert_eq!(result, "Django");
+    }
+
+    #[test]
+    fn test_detect_postgres_docker() {
+        let result = detect_framework(
+            "docker",
+            "",
+            &None,
+            &Some("postgres:15".to_string()),
+            "docker",
+        );
+        assert_eq!(result, "PostgreSQL");
+    }
+
+    #[test]
+    fn test_detect_node_fallback() {
+        let result = detect_framework(
+            "/usr/local/bin/node app.js",
+            "",
+            &None,
+            &None,
+            "node",
+        );
+        assert_eq!(result, "Node.js");
+    }
+
+    #[test]
+    fn test_detect_gin_not_false_positive() {
+        // "engine" contains "gin" but should NOT match Gin framework
+        let result = detect_framework(
+            "/opt/homebrew/opt/mysql@8.0/bin/mysqld --default-storage-engine=InnoDB",
+            "",
+            &None,
+            &None,
+            "mysqld",
+        );
+        assert_eq!(result, "MySQL");
+    }
+
+    // ── is_system_process ──
+
+    #[test]
+    fn test_system_process_apple() {
+        assert!(is_system_process("/System/Library/Frameworks/Something"));
+        assert!(is_system_process("/usr/libexec/some-daemon"));
+        assert!(is_system_process("com.apple.WebKit.something"));
+    }
+
+    #[test]
+    fn test_not_system_process() {
+        assert!(!is_system_process("node /app/server.js"));
+        assert!(!is_system_process("/opt/homebrew/bin/redis-server"));
+    }
+
+    // ── find_project_root ──
+
+    #[test]
+    fn test_find_project_root_empty() {
+        assert!(find_project_root("").is_none());
+    }
+
+    #[test]
+    fn test_find_project_root_nonexistent() {
+        assert!(find_project_root("/nonexistent/path/that/doesnt/exist").is_none());
+    }
+
+    // ── ports_to_json ──
+
+    #[test]
+    fn test_json_empty() {
+        let json = ports_to_json(&[]);
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn test_json_roundtrip() {
+        let port = PortInfo {
+            port: 3000,
+            pid: 12345,
+            name: "node".to_string(),
+            framework: "Next.js".to_string(),
+            project: "my-app".to_string(),
+            health: Health::Healthy,
+            ppid: 100,
+            memory_mb: 50.5,
+            uptime: Duration::from_secs(3600),
+            command: "node server.js".to_string(),
+            cwd: "/home/user/my-app".to_string(),
+            docker_container: None,
+            docker_image: None,
+        };
+        let json = ports_to_json(&[port]);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["port"], 3000);
+        assert_eq!(parsed[0]["framework"], "Next.js");
+        assert_eq!(parsed[0]["health"], "healthy");
+        assert_eq!(parsed[0]["uptime_secs"], 3600);
+    }
+
+    #[test]
+    fn test_json_health_values() {
+        let make_port = |health: Health| PortInfo {
+            port: 3000,
+            pid: 1,
+            name: "test".to_string(),
+            framework: "test".to_string(),
+            project: "".to_string(),
+            health,
+            ppid: 0,
+            memory_mb: 0.0,
+            uptime: Duration::ZERO,
+            command: "".to_string(),
+            cwd: "".to_string(),
+            docker_container: None,
+            docker_image: None,
+        };
+
+        let ports = vec![
+            make_port(Health::Healthy),
+            make_port(Health::Orphaned),
+            make_port(Health::Zombie),
+        ];
+        let json = ports_to_json(&ports);
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["health"], "healthy");
+        assert_eq!(parsed[1]["health"], "orphaned");
+        assert_eq!(parsed[2]["health"], "zombie");
+    }
 }

@@ -42,8 +42,12 @@ fn main() {
         Some("clean") => cmd_clean(),
         Some("watch") => cmd_watch(),
         Some(port_str) => {
-            if let Ok(port) = port_str.parse::<u16>() {
-                cmd_inspect(port);
+            // Try numeric first — could be a port number or an unknown command
+            if port_str.chars().all(|c| c.is_ascii_digit()) {
+                match port_str.parse::<u16>() {
+                    Ok(port) => cmd_inspect(port),
+                    Err(_) => eprintln!("  Invalid port: {port_str} (must be 1-65535)"),
+                }
             } else {
                 eprintln!("Unknown command: {port_str}");
                 display::print_help();
