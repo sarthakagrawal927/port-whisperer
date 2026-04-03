@@ -325,11 +325,35 @@ pub fn watch_ports() -> Vec<PortInfo> {
 }
 
 pub fn kill_process(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-9", &pid.to_string()])
+    // Try graceful SIGTERM first
+    let term = Command::new("kill")
+        .args(["-15", &pid.to_string()])
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    if term {
+        // Give process up to 2s to exit gracefully
+        for _ in 0..4 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let alive = Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !alive {
+                return true;
+            }
+        }
+        // Still alive — force kill
+        Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    } else {
+        false
+    }
 }
 
 pub fn get_git_branch(cwd: &str) -> Option<String> {
@@ -739,7 +763,9 @@ pub fn read_log(port_filter: Option<u16>, limit: usize) -> Vec<String> {
         .into_iter()
         .filter(|line| {
             if let Some(port) = port_filter {
-                line.contains(&format!(":{}", port))
+                // Match the exact tab-delimited port field: \t:PORT\t
+                let port_field = format!("\t:{}\t", port);
+                line.contains(&port_field)
             } else {
                 true
             }
@@ -1116,5 +1142,36 @@ mod tests {
         assert_eq!(parsed[0]["health"], "healthy");
         assert_eq!(parsed[1]["health"], "orphaned");
         assert_eq!(parsed[2]["health"], "zombie");
+    }
+
+    // ── read_log port filter precision ──
+
+    #[test]
+    fn test_log_filter_exact_port_match() {
+        // Simulate log lines — tab-delimited
+        // `:80` should NOT match `:8080`
+        let line_80 = "2026-01-01 00:00:00\t:80\t123\tnginx\tNginx\thealthy";
+        let line_8080 = "2026-01-01 00:00:00\t:8080\t456\tnode\tNext.js\thealthy";
+
+        let port_field_80 = format!("\t:{}\t", 80);
+        let port_field_8080 = format!("\t:{}\t", 8080);
+
+        // :80 filter should match only the :80 line
+        assert!(line_80.contains(&port_field_80));
+        assert!(!line_8080.contains(&port_field_80));
+
+        // :8080 filter should match only the :8080 line
+        assert!(!line_80.contains(&port_field_8080));
+        assert!(line_8080.contains(&port_field_8080));
+    }
+
+    #[test]
+    fn test_log_filter_33060_vs_3306() {
+        let line_3306 = "2026-01-01 00:00:00\t:3306\t100\tmysqld\tMySQL\thealthy";
+        let line_33060 = "2026-01-01 00:00:00\t:33060\t100\tmysqld\tMySQL\thealthy";
+
+        let filter = format!("\t:{}\t", 3306);
+        assert!(line_3306.contains(&filter));
+        assert!(!line_33060.contains(&filter));
     }
 }
