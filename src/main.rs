@@ -11,6 +11,7 @@ fn main() {
 
     match args.first().map(|s| s.as_str()) {
         None => cmd_ports(false),
+        Some("--version" | "-V") => println!("ports {}", env!("CARGO_PKG_VERSION")),
         Some("--all" | "-a") => cmd_ports(true),
         Some("--help" | "-h" | "help") => display::print_help(),
         Some("open") => {

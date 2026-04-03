@@ -288,6 +288,13 @@ pub fn print_help() {
     println!("    ports clean        Find & kill orphaned processes");
     println!("    ports watch        Monitor port changes in real-time");
     println!("    ports help         Show this help");
+    println!("    ports --version    Show version");
+    println!();
+    println!(
+        "  {} {}",
+        "repo:".dimmed(),
+        "https://github.com/sarthakagrawal927/port-whisperer".dimmed()
+    );
     println!();
 }
 

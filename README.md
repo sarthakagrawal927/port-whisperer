@@ -98,6 +98,11 @@ cargo test
 - **Framework detection is heuristic** — it layers command-line keywords, `package.json` deps, config files, and Docker images. Edge cases fall back to showing the raw process name.
 - **Orphan detection is conservative** — only dev-looking processes (node, python, cargo, etc.) with PPID 1 are flagged. It will miss unusual runtimes, but that's better than killing your terminal.
 
+## Roadmap
+
+- **`ports group`** — group ports by project (one app often holds multiple ports: dev server, HMR, API)
+- **Linux support** — adapt `lsof`/`ps` parsing for Linux flags and `/proc` filesystem
+
 ## Credits
 
 - Original: [LarsenCundric/port-whisperer](https://github.com/LarsenCundric/port-whisperer) (Node.js)
