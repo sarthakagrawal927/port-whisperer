@@ -83,9 +83,12 @@ cargo test
 
 57 tests: 36 unit tests (etime parsing, system app detection, orphan classification, framework detection, JSON output, log filtering) + 21 integration tests covering every command and edge case.
 
-## Platform
+## Limitations
 
-macOS only (uses `lsof` and `ps`).
+- **macOS only** — `lsof` and `ps` flags are darwin-specific. Linux support would need different parsing.
+- **Process names truncated** — `lsof` caps names at ~9 chars (e.g. `redis-server` shows as `redis-ser`). Detection still works, but display is truncated.
+- **Framework detection is heuristic** — it layers command-line keywords, `package.json` deps, config files, and Docker images. Edge cases fall back to showing the raw process name.
+- **Orphan detection is conservative** — only dev-looking processes (node, python, cargo, etc.) with PPID 1 are flagged. It will miss unusual runtimes, but that's better than killing your terminal.
 
 ## Credits
 
