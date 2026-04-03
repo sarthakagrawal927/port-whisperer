@@ -1,0 +1,16 @@
+[package]
+name = "port-whisperer"
+version = "1.0.0"
+edition = "2024"
+description = "Developer-friendly port scanner with framework detection"
+license = "MIT"
+
+[[bin]]
+name = "ports"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+colored = "3"
+serde_json = "1"
+comfy-table = "7"
