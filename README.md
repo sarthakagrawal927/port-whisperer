@@ -8,6 +8,14 @@ Rust port of [LarsenCundric/port-whisperer](https://github.com/LarsenCundric/por
 
 ## Install
 
+One-liner (downloads prebuilt binary):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sarthakagrawal927/port-whisperer/main/install.sh | sh
+```
+
+Or with Cargo:
+
 ```bash
 cargo install --git https://github.com/sarthakagrawal927/port-whisperer
 ```
