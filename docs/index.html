@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>port-whisperer — Developer Port Scanner</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --cyan: #58a6ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --magenta: #d2a8ff;
+      --blue: #79c0ff;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 80px 0 48px;
+    }
+
+    .hero h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 12px;
+    }
+
+    .hero h1 span { color: var(--cyan); }
+
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--text-dim);
+      max-width: 520px;
+      margin: 0 auto 32px;
+    }
+
+    .badge-row {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+
+    .badge.rust { border-color: #f74c00; color: #f74c00; }
+    .badge.macos { border-color: var(--text-dim); }
+    .badge.size { border-color: var(--green); color: var(--green); }
+
+    /* Install */
+    .install-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 48px;
+    }
+
+    .install-box h3 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      margin-bottom: 12px;
+    }
+
+    .install-cmd {
+      position: relative;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 48px 16px 16px;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.9rem;
+      color: var(--green);
+      overflow-x: auto;
+      margin-bottom: 12px;
+    }
+
+    .install-cmd .prompt { color: var(--text-dim); }
+
+    .copy-btn {
+      position: absolute;
+      top: 50%;
+      right: 12px;
+      transform: translateY(-50%);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 0.75rem;
+      transition: all 0.15s;
+    }
+
+    .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+    .install-alt {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    .install-alt code {
+      background: var(--bg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+
+    /* Terminal Demo */
+    .terminal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 48px;
+    }
+
+    .terminal-bar {
+      background: var(--bg);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot.r { background: var(--red); }
+    .terminal-dot.y { background: var(--yellow); }
+    .terminal-dot.g { background: var(--green); }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .terminal-body {
+      padding: 20px;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+
+    .terminal-body .prompt { color: var(--green); }
+    .terminal-body .cmd { color: var(--text); }
+    .terminal-body .header { color: var(--text); font-weight: 700; }
+    .terminal-body .port { color: var(--cyan); }
+    .terminal-body .framework { color: var(--magenta); }
+    .terminal-body .project { color: var(--blue); }
+    .terminal-body .healthy { color: var(--green); }
+    .terminal-body .orphaned { color: var(--yellow); }
+    .terminal-body .dim { color: var(--text-dim); }
+    .terminal-body .border { color: #484f58; }
+
+    /* Commands */
+    .commands {
+      margin-bottom: 48px;
+    }
+
+    .commands h2 {
+      font-size: 1.5rem;
+      margin-bottom: 24px;
+    }
+
+    .cmd-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .cmd-card {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      gap: 16px;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      align-items: center;
+    }
+
+    .cmd-card code {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      color: var(--cyan);
+    }
+
+    .cmd-card span {
+      font-size: 0.9rem;
+      color: var(--text-dim);
+    }
+
+    /* Features */
+    .features {
+      margin-bottom: 48px;
+    }
+
+    .features h2 {
+      font-size: 1.5rem;
+      margin-bottom: 24px;
+    }
+
+    .feat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .feat-card {
+      padding: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .feat-card h3 {
+      font-size: 1rem;
+      margin-bottom: 6px;
+    }
+
+    .feat-card p {
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+
+    footer a { color: var(--cyan); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    @media (max-width: 600px) {
+      .hero h1 { font-size: 2rem; }
+      .hero p { font-size: 1rem; }
+      .feat-grid { grid-template-columns: 1fr; }
+      .cmd-card { grid-template-columns: 1fr; gap: 4px; }
+      .terminal-body { font-size: 0.72rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <section class="hero">
+      <h1>port-<span>whisperer</span></h1>
+      <p>See what's running on your ports. Framework detection, health monitoring, and process management in a single binary.</p>
+      <div class="badge-row">
+        <span class="badge rust">Rust</span>
+        <span class="badge macos">macOS</span>
+        <span class="badge size">~1MB binary</span>
+      </div>
+    </section>
+
+    <div class="install-box">
+      <h3>Install</h3>
+      <div class="install-cmd">
+        <span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/sarthakagrawal927/port-whisperer/main/install.sh | sh
+        <button class="copy-btn" onclick="copy(this)">Copy</button>
+      </div>
+      <div class="install-alt">
+        Or with Cargo: <code>cargo install --git https://github.com/sarthakagrawal927/port-whisperer</code>
+      </div>
+    </div>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="terminal-dot r"></div>
+        <div class="terminal-dot y"></div>
+        <div class="terminal-dot g"></div>
+        <div class="terminal-title">ports</div>
+        <div style="width: 36px"></div>
+      </div>
+      <div class="terminal-body">
+<span class="prompt">$</span> <span class="cmd">ports</span>
+<span class="border">╭────────┬───────┬───────────┬────────────┬──────────┬─────────────┬────────╮</span>
+<span class="border">│</span> <span class="header">PORT</span>   <span class="border">┆</span> <span class="header">PID</span>   <span class="border">┆</span> <span class="header">PROCESS</span>   <span class="border">┆</span> <span class="header">FRAMEWORK</span>  <span class="border">┆</span> <span class="header">PROJECT</span>  <span class="border">┆</span> <span class="header">HEALTH</span>      <span class="border">┆</span> <span class="header">UPTIME</span> <span class="border">│</span>
+<span class="border">╞════════╪═══════╪═══════════╪════���═══════╪══════════╪════════════���╪════════╡</span>
+<span class="border">│</span> <span class="port">:3000</span>  <span class="border">┆</span> 42510 <span class="border">┆</span> node      <span class="border">┆</span> <span class="framework">Next.js</span>    <span class="border">┆</span> <span class="project">my-app</span>   <span class="border">┆</span> <span class="healthy">●  healthy</span>  <span class="border">┆</span> 2h15m  <span class="border">│</span>
+<span class="border">├╌╌╌╌╌╌╌╌┼╌���╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤</span>
+<span class="border">│</span> <span class="port">:3306</span>  <span class="border">┆</span> 7825  <span class="border">┆</span> mysqld    <span class="border">┆</span> <span class="framework">MySQL</span>      <span class="border">┆</span>          <span class="border">┆</span> <span class="healthy">●  healthy</span>  <span class="border">┆</span> 5d3h   <span class="border">│</span>
+<span class="border">├╌╌���╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤</span>
+<span class="border">│</span> <span class="port">:5173</span>  <span class="border">┆</span> 51023 <span class="border">┆</span> node      <span class="border">┆</span> <span class="framework">Vite</span>       <span class="border">┆</span> <span class="project">docs</span>     <span class="border">┆</span> <span class="healthy">●  healthy</span>  <span class="border">┆</span> 45m    <span class="border">│</span>
+<span class="border">├╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤</span>
+<span class="border">│</span> <span class="port">:6379</span>  <span class="border">┆</span> 7961  <span class="border">┆</span> redis-ser <span class="border">┆</span> <span class="framework">Redis</span>      <span class="border">┆</span>          <span class="border">┆</span> <span class="healthy">��  healthy</span>  <span class="border">┆</span> 5d3h   <span class="border">│</span>
+<span class="border">├╌╌╌╌╌╌╌╌���╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌╌╌╌╌╌┼╌╌╌╌╌╌╌╌┤</span>
+<span class="border">│</span> <span class="port">:8000</span>  <span class="border">┆</span> 63201 <span class="border">┆</span> python3   <span class="border">┆</span> <span class="framework">Django</span>     <span class="border">┆</span> <span class="project">backend</span>  <span class="border">┆</span> <span class="orphaned">●  orphaned</span> <span class="border">���</span> 1d8h   <span class="border">│</span>
+<span class="border">╰────────┴───────┴──���────────┴────────────┴──��───────┴────────────��┴────────╯</span>
+
+  <span class="port">5</span> ports active  |  <span class="dim">tip:</span> 'ports &lt;number&gt;' to inspect
+      </div>
+    </div>
+
+    <section class="commands">
+      <h2>Commands</h2>
+      <div class="cmd-grid">
+        <div class="cmd-card"><code>ports</code> <span>Dev server ports with framework detection</span></div>
+        <div class="cmd-card"><code>ports --all</code> <span>Include system services</span></div>
+        <div class="cmd-card"><code>ports 3000</code> <span>Inspect port — process details + interactive kill</span></div>
+        <div class="cmd-card"><code>ports open 3000</code> <span>Open localhost:3000 in browser</span></div>
+        <div class="cmd-card"><code>ports free 3000</code> <span>Kill whatever's on that port</span></div>
+        <div class="cmd-card"><code>ports json</code> <span>JSON output for scripting</span></div>
+        <div class="cmd-card"><code>ports log</code> <span>Port history over time</span></div>
+        <div class="cmd-card"><code>ports ps</code> <span>Running dev processes by CPU%</span></div>
+        <div class="cmd-card"><code>ports clean</code> <span>Find and kill orphaned processes</span></div>
+        <div class="cmd-card"><code>ports watch</code> <span>Real-time port open/close events</span></div>
+      </div>
+    </section>
+
+    <section class="features">
+      <h2>Features</h2>
+      <div class="feat-grid">
+        <div class="feat-card">
+          <h3>Framework Detection</h3>
+          <p>Identifies 30+ frameworks — Next.js, Vite, Express, Django, Rails, FastAPI, and more — via command-line, package.json, config files, and Docker images.</p>
+        </div>
+        <div class="feat-card">
+          <h3>Docker Aware</h3>
+          <p>Maps host ports to container names and images. PostgreSQL, Redis, MongoDB, and other Docker services are identified automatically.</p>
+        </div>
+        <div class="feat-card">
+          <h3>Project Resolution</h3>
+          <p>Walks up from process cwd to find project root via package.json, Cargo.toml, go.mod, and other markers. Shows the project name in the table.</p>
+        </div>
+        <div class="feat-card">
+          <h3>Health Monitoring</h3>
+          <p>Color-coded health: green (healthy), yellow (orphaned dev server), red (zombie). Conservative — never flags daemons or apps as unhealthy.</p>
+        </div>
+        <div class="feat-card">
+          <h3>Graceful Kill</h3>
+          <p>Always sends SIGTERM first and waits up to 2s for the process to exit cleanly. Falls back to SIGKILL only if needed.</p>
+        </div>
+        <div class="feat-card">
+          <h3>Port History</h3>
+          <p>Every scan logs a timestamped snapshot. Look up what was running on any port at any time with <code>ports log &lt;port&gt;</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <p>
+        Rust port of <a href="https://github.com/LarsenCundric/port-whisperer">LarsenCundric/port-whisperer</a>
+        &middot; Written by <a href="https://claude.ai/claude-code">Claude Code</a>
+        &middot; <a href="https://github.com/sarthakagrawal927/port-whisperer">Source on GitHub</a>
+      </p>
+    </footer>
+  </div>
+
+  <script>
+    function copy(btn) {
+      const text = btn.parentElement.textContent.replace('Copy', '').replace('$ ', '').trim();
+      navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 1500);
+    }
+  </script>
+</body>
+</html>
