@@ -13,6 +13,28 @@ fn main() {
         None => cmd_ports(false),
         Some("--all" | "-a") => cmd_ports(true),
         Some("--help" | "-h" | "help") => display::print_help(),
+        Some("open") => {
+            if let Some(port) = args.get(1).and_then(|s| s.parse::<u16>().ok()) {
+                cmd_open(port);
+            } else {
+                eprintln!("  Usage: ports open <port>");
+            }
+        }
+        Some("free") => {
+            if let Some(port) = args.get(1).and_then(|s| s.parse::<u16>().ok()) {
+                cmd_free(port);
+            } else {
+                eprintln!("  Usage: ports free <port>");
+            }
+        }
+        Some("json") => {
+            let show_all = args.get(1).is_some_and(|a| a == "--all" || a == "-a");
+            cmd_json(show_all);
+        }
+        Some("log") => {
+            let port_filter = args.get(1).and_then(|s| s.parse::<u16>().ok());
+            cmd_log(port_filter);
+        }
         Some("ps") => {
             let show_all = args.get(1).is_some_and(|a| a == "--all" || a == "-a");
             cmd_ps(show_all);
@@ -32,7 +54,30 @@ fn main() {
 
 fn cmd_ports(show_all: bool) {
     let ports = scanner::scan_ports(show_all);
+    scanner::log_snapshot(&ports);
     display::print_ports_table(&ports);
+}
+
+fn cmd_open(port: u16) {
+    scanner::open_in_browser(port);
+    println!("  Opened http://localhost:{}", port);
+}
+
+fn cmd_free(port: u16) {
+    match scanner::free_port(port) {
+        Some((pid, name)) => println!("  Killed {} (PID {}) on :{}", name, pid, port),
+        None => eprintln!("  Nothing on :{} (or kill failed)", port),
+    }
+}
+
+fn cmd_json(show_all: bool) {
+    let ports = scanner::scan_ports(show_all);
+    println!("{}", scanner::ports_to_json(&ports));
+}
+
+fn cmd_log(port_filter: Option<u16>) {
+    let entries = scanner::read_log(port_filter, 50);
+    display::print_log(&entries, port_filter);
 }
 
 fn cmd_ps(show_all: bool) {

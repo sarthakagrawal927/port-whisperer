@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -600,6 +601,108 @@ fn detect_framework(
         n if n.contains("stable") || n.contains("diffusion") => process_name.to_string(),
         _ => process_name.to_string(),
     }
+}
+
+pub fn open_in_browser(port: u16) {
+    let url = format!("http://localhost:{}", port);
+    Command::new("open").arg(&url).spawn().ok();
+}
+
+pub fn free_port(port: u16) -> Option<(u32, String)> {
+    if let Some(info) = scan_port_detail(port) {
+        let pid = info.pid;
+        let name = info.name.clone();
+        if kill_process(pid) {
+            return Some((pid, name));
+        }
+    }
+    None
+}
+
+pub fn ports_to_json(ports: &[PortInfo]) -> String {
+    let entries: Vec<serde_json::Value> = ports
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "port": p.port,
+                "pid": p.pid,
+                "name": p.name,
+                "framework": p.framework,
+                "project": p.project,
+                "health": match p.health {
+                    Health::Healthy => "healthy",
+                    Health::Orphaned => "orphaned",
+                    Health::Zombie => "zombie",
+                },
+                "ppid": p.ppid,
+                "memory_mb": (p.memory_mb * 10.0).round() / 10.0,
+                "uptime_secs": p.uptime.as_secs(),
+                "command": p.command,
+                "cwd": p.cwd,
+                "docker_container": p.docker_container,
+                "docker_image": p.docker_image,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn log_dir() -> PathBuf {
+    let dir = dirs_home().join(".ports-history");
+    fs::create_dir_all(&dir).ok();
+    dir
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+pub fn log_snapshot(ports: &[PortInfo]) {
+    let path = log_dir().join("history.log");
+    let timestamp = run_cmd("date", &["+%Y-%m-%d %H:%M:%S"]);
+    let timestamp = timestamp.trim();
+
+    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+
+    for p in ports {
+        let health = match p.health {
+            Health::Healthy => "healthy",
+            Health::Orphaned => "orphaned",
+            Health::Zombie => "zombie",
+        };
+        writeln!(
+            file,
+            "{}\t:{}\t{}\t{}\t{}\t{}",
+            timestamp, p.port, p.pid, p.name, p.framework, health
+        )
+        .ok();
+    }
+}
+
+pub fn read_log(port_filter: Option<u16>, limit: usize) -> Vec<String> {
+    let path = log_dir().join("history.log");
+    let contents = fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = contents.lines().rev().collect();
+
+    let filtered: Vec<String> = lines
+        .into_iter()
+        .filter(|line| {
+            if let Some(port) = port_filter {
+                line.contains(&format!(":{}", port))
+            } else {
+                true
+            }
+        })
+        .take(limit)
+        .map(|s| s.to_string())
+        .collect();
+
+    filtered.into_iter().rev().collect()
 }
 
 fn parse_uptime_from_pid(pid: u32) -> Duration {

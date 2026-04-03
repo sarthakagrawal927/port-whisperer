@@ -26,6 +26,11 @@ cargo install --path .
 ports              Show dev server ports (filtered)
 ports --all        Show all listening ports
 ports <port>       Inspect a specific port (+ interactive kill)
+ports open <port>  Open localhost:<port> in browser
+ports free <port>  Kill whatever's on that port
+ports json         JSON output for scripting
+ports log          Show port history
+ports log <port>   History for a specific port
 ports ps           Show running dev processes sorted by CPU%
 ports ps --all     Show all processes
 ports clean        Find & kill orphaned/zombie processes
@@ -53,6 +58,10 @@ ports help         Show help
 - **Process health** — color-coded: green (healthy), yellow (orphaned), red (zombie)
 - **Smart filtering** — hides system apps (Spotify, Chrome, Slack, etc.) by default
 - **Interactive kill** — inspect any port and kill the process with a prompt
+- **Quick free** — `ports free 3000` kills whatever's on that port, no questions
+- **Browser open** — `ports open 3000` opens localhost in your browser
+- **JSON output** — `ports json` for scripting and piping to `jq`
+- **Port history** — every scan is logged; `ports log` shows what was running when
 - **Watch mode** — real-time monitoring of port open/close events
 
 ## Platform

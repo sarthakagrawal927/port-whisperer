@@ -221,6 +221,55 @@ pub fn print_clean_result(unhealthy: &[&PortInfo]) {
     println!();
 }
 
+pub fn print_log(entries: &[String], port_filter: Option<u16>) {
+    if entries.is_empty() {
+        let msg = match port_filter {
+            Some(p) => format!("No history for port :{}.", p),
+            None => "No port history yet. Run 'ports' to start logging.".to_string(),
+        };
+        println!("  {}", msg.dimmed());
+        return;
+    }
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_header(vec![
+            Cell::new("TIMESTAMP").add_attribute(Attribute::Bold),
+            Cell::new("PORT").add_attribute(Attribute::Bold),
+            Cell::new("PID").add_attribute(Attribute::Bold),
+            Cell::new("PROCESS").add_attribute(Attribute::Bold),
+            Cell::new("FRAMEWORK").add_attribute(Attribute::Bold),
+            Cell::new("HEALTH").add_attribute(Attribute::Bold),
+        ]);
+
+    for entry in entries {
+        let cols: Vec<&str> = entry.split('\t').collect();
+        if cols.len() >= 6 {
+            let health_cell = match cols[5] {
+                "healthy" => Cell::new("healthy").fg(Color::Green),
+                "orphaned" => Cell::new("orphaned").fg(Color::Yellow),
+                "zombie" => Cell::new("zombie").fg(Color::Red),
+                other => Cell::new(other),
+            };
+            table.add_row(vec![
+                Cell::new(cols[0]).fg(Color::DarkGrey),
+                Cell::new(cols[1]).fg(Color::Cyan),
+                Cell::new(cols[2]),
+                Cell::new(cols[3]),
+                Cell::new(cols[4]).fg(Color::Magenta),
+                health_cell,
+            ]);
+        }
+    }
+
+    println!();
+    println!("{}", table);
+    println!();
+}
+
 pub fn print_help() {
     println!();
     println!("  {} {}", "ports".bold().cyan(), "— developer port scanner".dimmed());
@@ -229,6 +278,11 @@ pub fn print_help() {
     println!("    ports              Show dev server ports");
     println!("    ports --all        Show all listening ports");
     println!("    ports <port>       Inspect a specific port");
+    println!("    ports open <port>  Open localhost:<port> in browser");
+    println!("    ports free <port>  Kill whatever's on that port");
+    println!("    ports json         JSON output for scripting");
+    println!("    ports log          Show port history");
+    println!("    ports log <port>   Show history for a specific port");
     println!("    ports ps           Show running dev processes");
     println!("    ports ps --all     Show all processes");
     println!("    ports clean        Find & kill orphaned processes");
