@@ -325,35 +325,148 @@ pub fn watch_ports() -> Vec<PortInfo> {
 }
 
 pub fn kill_process(pid: u32) -> bool {
-    // Try graceful SIGTERM first
+    kill_process_force(pid, false)
+}
+
+/// Kill a process. When `force` is true, skip SIGTERM and go straight to SIGKILL.
+pub fn kill_process_force(pid: u32, force: bool) -> bool {
+    if force {
+        return Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+
     let term = Command::new("kill")
         .args(["-15", &pid.to_string()])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
 
-    if term {
-        // Give process up to 2s to exit gracefully
-        for _ in 0..4 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            let alive = Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !alive {
-                return true;
-            }
-        }
-        // Still alive — force kill
-        Command::new("kill")
-            .args(["-9", &pid.to_string()])
+    if !term {
+        return false;
+    }
+
+    for _ in 0..4 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let alive = Command::new("kill")
+            .args(["-0", &pid.to_string()])
             .status()
             .map(|s| s.success())
-            .unwrap_or(false)
-    } else {
-        false
+            .unwrap_or(false);
+        if !alive {
+            return true;
+        }
     }
+    Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Expand args like ["3000", "3001-3003", "8080"] into [3000, 3001, 3002, 3003, 8080].
+/// Invalid tokens are skipped and returned in the error vector.
+pub fn parse_port_list(tokens: &[String]) -> (Vec<u16>, Vec<String>) {
+    let mut ports: Vec<u16> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut seen: HashSet<u16> = HashSet::new();
+
+    for tok in tokens {
+        if let Some((a, b)) = tok.split_once('-') {
+            let lo: Option<u16> = a.parse().ok();
+            let hi: Option<u16> = b.parse().ok();
+            match (lo, hi) {
+                (Some(lo), Some(hi)) if lo <= hi => {
+                    for p in lo..=hi {
+                        if seen.insert(p) {
+                            ports.push(p);
+                        }
+                    }
+                }
+                _ => errors.push(tok.clone()),
+            }
+        } else {
+            match tok.parse::<u16>() {
+                Ok(p) => {
+                    if seen.insert(p) {
+                        ports.push(p);
+                    }
+                }
+                Err(_) => errors.push(tok.clone()),
+            }
+        }
+    }
+
+    (ports, errors)
+}
+
+/// Find PIDs whose process name (or full command line with `full=true`) matches `pattern`.
+pub fn find_pids_by_name(pattern: &str, full: bool) -> Vec<(u32, String)> {
+    let output = run_cmd("ps", &["-Ao", "pid=,comm=,command="]);
+    let mut hits: Vec<(u32, String)> = Vec::new();
+    let self_pid = std::process::id();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut parts = trimmed.splitn(3, char::is_whitespace);
+        let pid_str = match parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let comm = parts.next().unwrap_or("").trim();
+        let cmdline = parts.next().unwrap_or("").trim();
+
+        let pid: u32 = match pid_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if pid == self_pid {
+            continue;
+        }
+
+        let comm_short = comm.rsplit('/').next().unwrap_or(comm);
+        let matches = if full {
+            cmdline.contains(pattern)
+        } else {
+            comm_short == pattern || comm_short.starts_with(pattern)
+        };
+
+        if matches {
+            hits.push((pid, comm_short.to_string()));
+        }
+    }
+    hits
+}
+
+/// Return ports whose project name matches `name`.
+pub fn ports_by_project(name: &str) -> Vec<PortInfo> {
+    scan_ports(true)
+        .into_iter()
+        .filter(|p| p.project == name)
+        .collect()
+}
+
+/// Return ports whose process cwd is inside `root`.
+pub fn ports_under_path(root: &Path) -> Vec<PortInfo> {
+    scan_ports(true)
+        .into_iter()
+        .filter(|p| {
+            if p.cwd.is_empty() {
+                return false;
+            }
+            Path::new(&p.cwd).starts_with(root)
+        })
+        .collect()
+}
+
+/// Resolve the project root containing `cwd` (looks for known marker files).
+pub fn project_root_for(cwd: &str) -> Option<PathBuf> {
+    find_project_root(cwd)
 }
 
 pub fn get_git_branch(cwd: &str) -> Option<String> {
@@ -678,16 +791,6 @@ pub fn open_in_browser(port: u16) {
     Command::new("open").arg(&url).spawn().ok();
 }
 
-pub fn free_port(port: u16) -> Option<(u32, String)> {
-    if let Some(info) = scan_port_detail(port) {
-        let pid = info.pid;
-        let name = info.name.clone();
-        if kill_process(pid) {
-            return Some((pid, name));
-        }
-    }
-    None
-}
 
 pub fn ports_to_json(ports: &[PortInfo]) -> String {
     let entries: Vec<serde_json::Value> = ports
@@ -1163,6 +1266,53 @@ mod tests {
         // :8080 filter should match only the :8080 line
         assert!(!line_80.contains(&port_field_8080));
         assert!(line_8080.contains(&port_field_8080));
+    }
+
+    // ── parse_port_list ──
+
+    #[test]
+    fn test_parse_port_list_single() {
+        let (ports, errs) = parse_port_list(&["3000".to_string()]);
+        assert_eq!(ports, vec![3000]);
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_port_list_range() {
+        let (ports, errs) = parse_port_list(&["3000-3003".to_string()]);
+        assert_eq!(ports, vec![3000, 3001, 3002, 3003]);
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_port_list_mixed_with_dedupe() {
+        let (ports, errs) = parse_port_list(&[
+            "3000".to_string(),
+            "3001-3003".to_string(),
+            "3002".to_string(),
+            "8080".to_string(),
+        ]);
+        assert_eq!(ports, vec![3000, 3001, 3002, 3003, 8080]);
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_port_list_invalid() {
+        let (ports, errs) = parse_port_list(&[
+            "abc".to_string(),
+            "3000".to_string(),
+            "9999-1".to_string(), // hi < lo
+        ]);
+        assert_eq!(ports, vec![3000]);
+        assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_port_list_overflow() {
+        // 70000 > u16::MAX
+        let (ports, errs) = parse_port_list(&["70000".to_string()]);
+        assert!(ports.is_empty());
+        assert_eq!(errs, vec!["70000".to_string()]);
     }
 
     #[test]
