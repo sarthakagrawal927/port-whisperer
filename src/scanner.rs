@@ -103,7 +103,15 @@ const PROJECT_MARKERS: &[&str] = &[
     "composer.json",
 ];
 
+// Set by run_cmd when a subprocess hits the timeout. Subsequent calls in the
+// same `ports` invocation become no-ops so a single bad scan can't leak more
+// than one stuck child.
+static SUBPROC_STUCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn run_cmd(cmd: &str, args: &[&str]) -> String {
+    if SUBPROC_STUCK.load(std::sync::atomic::Ordering::Relaxed) {
+        return String::new();
+    }
     run_cmd_timeout(cmd, args, SUBPROC_TIMEOUT)
 }
 
@@ -140,8 +148,23 @@ fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> String {
                 if Instant::now() >= deadline {
                     // Stuck (e.g. macOS `lsof` spinning on a bad fd). Try to
                     // kill, but don't `wait()` — an unkillable child would
-                    // hang us. Leak the handle and move on.
+                    // hang us. Leak the handle, latch the stuck bit so the
+                    // rest of this scan skips its subprocess calls, and move on.
                     let _ = child.kill();
+                    SUBPROC_STUCK.store(true, std::sync::atomic::Ordering::Relaxed);
+                    eprintln!(
+                        "  warning: `{}` timed out after {}s and could not be killed.",
+                        cmd,
+                        timeout.as_secs()
+                    );
+                    if cmd == "lsof" {
+                        eprintln!(
+                            "  this is a macOS kernel bug — `lsof` is stuck inside close()."
+                        );
+                        eprintln!(
+                            "  reboot to clear the stuck process (SIGKILL has no effect)."
+                        );
+                    }
                     return String::new();
                 }
                 thread::sleep(Duration::from_millis(20));
@@ -153,7 +176,79 @@ fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> String {
     rx.recv_timeout(Duration::from_millis(200)).unwrap_or_default()
 }
 
+/// Returns PIDs of `lsof` processes leaked by previous `ports` runs (stuck
+/// >30s in the kernel close() syscall on macOS). These can't be SIGKILLed,
+/// so if any are present we refuse to spawn another and tell the user to
+/// reboot.
+fn leaked_lsofs() -> Vec<u32> {
+    // pgrep is a tiny syscall-only wrapper around proc_listpids and doesn't
+    // hit the bad code path, so it's safe to run without a timeout guard.
+    let out = Command::new("pgrep")
+        .args(["-u", &whoami(), "-x", "lsof"])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let pids: Vec<String> = out.lines().map(|l| l.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    if pids.is_empty() {
+        return Vec::new();
+    }
+
+    let ps_out = Command::new("ps")
+        .args(["-p", &pids.join(","), "-o", "pid=,etime="])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    ps_out
+        .lines()
+        .filter_map(|line| {
+            let mut it = line.split_whitespace();
+            let pid: u32 = it.next()?.parse().ok()?;
+            let etime = it.next()?;
+            if parse_etime(etime).as_secs() > 30 {
+                Some(pid)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn whoami() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+/// Pre-flight check called by commands that scan via lsof. Returns Err with a
+/// user-facing message if leaked lsofs from prior runs are detected. Callers
+/// should print the message and exit non-zero rather than spawning more lsofs.
+pub fn check_subproc_health() -> Result<(), String> {
+    let leaked = leaked_lsofs();
+    if leaked.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "  {} stuck `lsof` process(es) from a prior `ports` run are still alive (PIDs: {}).\n\
+         \n  These are wedged inside the macOS close() syscall and can't be killed\n  \
+         (SIGKILL is queued but never delivered while the thread is in kernel mode).\n  \
+         Usually caused by an orphaned Network Extension socket — leftover utun tunnels\n  \
+         from a crashed VPN app (Tailscale, WireGuard, etc.).\n\n  \
+         Reboot to clear them. Running `ports` again before reboot would just add to\n  \
+         the pile, so this command is refusing to run.",
+        leaked.len(),
+        leaked.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "),
+    ))
+}
+
 pub fn scan_ports(show_all: bool) -> Vec<PortInfo> {
+    if let Err(msg) = check_subproc_health() {
+        eprintln!("{}", msg);
+        return Vec::new();
+    }
     let lsof_output = run_cmd("lsof", &["-iTCP", "-sTCP:LISTEN", "-P", "-n"]);
 
     let mut port_pid_map: HashMap<u16, (u32, String)> = HashMap::new();
