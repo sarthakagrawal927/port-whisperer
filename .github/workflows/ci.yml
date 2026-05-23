@@ -6,5 +6,17 @@ on:
     branches: [main, master]
 
 jobs:
-  foundry-ci:
-    uses: sarthakagrawal927/saas-maker/.github/workflows/foundry-ci.yml@main
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Test
+        run: cargo test --release --locked
