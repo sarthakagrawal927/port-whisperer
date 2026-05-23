@@ -1,4 +1,4 @@
-use crate::scanner::{Health, PortInfo, ProcessInfo};
+use crate::scanner::{CheckStatus, DoctorCheck, Health, PortInfo, ProcessInfo};
 use colored::Colorize;
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use std::time::Duration;
@@ -270,6 +270,44 @@ pub fn print_log(entries: &[String], port_filter: Option<u16>) {
     println!();
 }
 
+pub fn print_doctor(checks: &[DoctorCheck]) {
+    println!();
+    println!("  {} {}", "ports doctor".bold().cyan(), "— system health check".dimmed());
+    println!();
+
+    let mut worst = CheckStatus::Ok;
+    for c in checks {
+        let (mark, color_label) = match c.status {
+            CheckStatus::Ok => ("✓", c.label.green()),
+            CheckStatus::Warn => ("⚠", c.label.yellow()),
+            CheckStatus::Fail => ("✗", c.label.red()),
+        };
+        let mark = match c.status {
+            CheckStatus::Ok => mark.green(),
+            CheckStatus::Warn => mark.yellow(),
+            CheckStatus::Fail => mark.red(),
+        };
+        println!("  {}  {:<28} {}", mark, color_label, c.detail.dimmed());
+        if let Some(hint) = &c.hint {
+            println!("     {} {}", "→".dimmed(), hint.dimmed());
+        }
+        worst = match (worst, c.status) {
+            (CheckStatus::Fail, _) | (_, CheckStatus::Fail) => CheckStatus::Fail,
+            (CheckStatus::Warn, _) | (_, CheckStatus::Warn) => CheckStatus::Warn,
+            _ => CheckStatus::Ok,
+        };
+    }
+
+    println!();
+    let summary = match worst {
+        CheckStatus::Ok => "all clear — `ports` should run fast.".green().to_string(),
+        CheckStatus::Warn => "system is degraded — `ports` may be slow.".yellow().to_string(),
+        CheckStatus::Fail => "system is in a bad state — reboot recommended.".red().bold().to_string(),
+    };
+    println!("  {}", summary);
+    println!();
+}
+
 pub fn print_help() {
     println!();
     println!("  {} {}", "ports".bold().cyan(), "— developer port scanner".dimmed());
@@ -292,6 +330,7 @@ pub fn print_help() {
     println!("    ports ps                   Show running dev processes");
     println!("    ports ps --all             Show all processes");
     println!("    ports clean                Find & kill orphaned processes");
+    println!("    ports doctor               Diagnose why `ports` itself is slow/hanging");
     println!("    ports watch                Monitor port changes in real-time");
     println!("    ports help                 Show this help");
     println!("    ports --version            Show version");

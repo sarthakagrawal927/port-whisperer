@@ -112,14 +112,20 @@ fn run_cmd(cmd: &str, args: &[&str]) -> String {
     if SUBPROC_STUCK.load(std::sync::atomic::Ordering::Relaxed) {
         return String::new();
     }
-    run_cmd_timeout(cmd, args, SUBPROC_TIMEOUT)
+    run_cmd_timeout(cmd, args, SUBPROC_TIMEOUT, /*verbose=*/ true)
+}
+
+/// Same as `run_cmd_timeout` but suppresses the stderr warning on timeout —
+/// for callers (like `doctor`) that own their own messaging.
+fn run_cmd_timeout_quiet(cmd: &str, args: &[&str], timeout: Duration) -> String {
+    run_cmd_timeout(cmd, args, timeout, /*verbose=*/ false)
 }
 
 /// Run a subprocess and capture stdout, killing it if it exceeds `timeout`.
 /// Returns an empty string on timeout, spawn failure, or non-zero exit.
 /// stderr is discarded. A background thread drains stdout so a chatty child
 /// can't deadlock on pipe back-pressure.
-fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> String {
+fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration, verbose: bool) -> String {
     let mut child = match Command::new(cmd)
         .args(args)
         .stdin(Stdio::null())
@@ -152,18 +158,20 @@ fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> String {
                     // rest of this scan skips its subprocess calls, and move on.
                     let _ = child.kill();
                     SUBPROC_STUCK.store(true, std::sync::atomic::Ordering::Relaxed);
-                    eprintln!(
-                        "  warning: `{}` timed out after {}s and could not be killed.",
-                        cmd,
-                        timeout.as_secs()
-                    );
-                    if cmd == "lsof" {
+                    if verbose {
                         eprintln!(
-                            "  this is a macOS kernel bug — `lsof` is stuck inside close()."
+                            "  warning: `{}` timed out after {}s and could not be killed.",
+                            cmd,
+                            timeout.as_secs()
                         );
-                        eprintln!(
-                            "  reboot to clear the stuck process (SIGKILL has no effect)."
-                        );
+                        if cmd == "lsof" {
+                            eprintln!(
+                                "  this is a macOS kernel bug — `lsof` is stuck inside close()."
+                            );
+                            eprintln!(
+                                "  reboot to clear the stuck process (SIGKILL has no effect)."
+                            );
+                        }
                     }
                     return String::new();
                 }
@@ -221,6 +229,173 @@ fn whoami() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "0".to_string())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CheckStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+#[derive(Debug, Clone)]
+pub struct DoctorCheck {
+    pub label: String,
+    pub status: CheckStatus,
+    pub detail: String,
+    pub hint: Option<String>,
+}
+
+/// Diagnose why `ports` might be slow/hanging on this machine. Checks each
+/// known failure mode (leaked lsofs, orphaned utun tunnels, known buggy
+/// tunnel apps, live lsof probe). Cheap — no scanning, all checks are
+/// bounded.
+pub fn run_doctor() -> Vec<DoctorCheck> {
+    let mut out = Vec::new();
+
+    // 1. Leaked lsofs from prior runs.
+    let leaked = leaked_lsofs();
+    out.push(if leaked.is_empty() {
+        DoctorCheck {
+            label: "leaked lsof processes".into(),
+            status: CheckStatus::Ok,
+            detail: "none".into(),
+            hint: None,
+        }
+    } else {
+        DoctorCheck {
+            label: "leaked lsof processes".into(),
+            status: CheckStatus::Fail,
+            detail: format!(
+                "{} stuck in kernel close() (PIDs: {})",
+                leaked.len(),
+                leaked.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "),
+            ),
+            hint: Some("reboot — SIGKILL won't reap these".into()),
+        }
+    });
+
+    // 2. utun interface count. >5 is suspicious on macOS.
+    let utun_count = count_utun_interfaces();
+    let utun_status = match utun_count {
+        0..=4 => CheckStatus::Ok,
+        5..=7 => CheckStatus::Warn,
+        _ => CheckStatus::Fail,
+    };
+    out.push(DoctorCheck {
+        label: "utun (tunnel) interfaces".into(),
+        status: utun_status,
+        detail: format!("{} present (healthy: 0-4)", utun_count),
+        hint: if utun_status == CheckStatus::Ok {
+            None
+        } else {
+            Some(
+                "orphaned tunnels from a VPN/NE provider that didn't shut down cleanly — \
+                 reboot to clear"
+                    .into(),
+            )
+        },
+    });
+
+    // 3. Known buggy tunnel apps currently running.
+    let tunnels = running_tunnel_apps();
+    out.push(if tunnels.is_empty() {
+        DoctorCheck {
+            label: "tunnel apps running".into(),
+            status: CheckStatus::Ok,
+            detail: "none".into(),
+            hint: None,
+        }
+    } else {
+        let status = if utun_count > 4 { CheckStatus::Warn } else { CheckStatus::Ok };
+        DoctorCheck {
+            label: "tunnel apps running".into(),
+            status,
+            detail: tunnels.join(", "),
+            hint: if status == CheckStatus::Warn {
+                Some(
+                    "one of these is probably leaving orphan utuns. \
+                     Quit from its menu bar (not Force Quit) before sleep/restart"
+                        .into(),
+                )
+            } else {
+                None
+            },
+        }
+    });
+
+    // 4. Live lsof probe — does an actual lsof call complete fast?
+    let probe_start = Instant::now();
+    let probe = run_cmd_timeout_quiet("lsof", &["-iTCP", "-sTCP:LISTEN", "-P", "-n"], Duration::from_secs(3));
+    let probe_ms = probe_start.elapsed().as_millis();
+    out.push(if probe.is_empty() && probe_ms > 2000 {
+        DoctorCheck {
+            label: "lsof probe".into(),
+            status: CheckStatus::Fail,
+            detail: format!("timed out after {}ms (lsof wedged in kernel close())", probe_ms),
+            hint: Some("`ports` will leak one stuck lsof on every run until you reboot".into()),
+        }
+    } else if probe.is_empty() {
+        DoctorCheck {
+            label: "lsof probe".into(),
+            status: CheckStatus::Warn,
+            detail: format!("returned no output ({}ms)", probe_ms),
+            hint: None,
+        }
+    } else {
+        DoctorCheck {
+            label: "lsof probe".into(),
+            status: CheckStatus::Ok,
+            detail: format!("ok ({}ms, {} lines)", probe_ms, probe.lines().count()),
+            hint: None,
+        }
+    });
+
+    out
+}
+
+fn count_utun_interfaces() -> usize {
+    let out = Command::new("ifconfig")
+        .arg("-l")
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    out.split_whitespace().filter(|n| n.starts_with("utun")).count()
+}
+
+fn running_tunnel_apps() -> Vec<String> {
+    let out = Command::new("ps")
+        .args(["-axo", "comm="])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    let known: &[(&str, &str)] = &[
+        ("tailscale", "Tailscale"),
+        ("cloudflarewarp", "Cloudflare WARP"),
+        ("CloudflareWARP", "Cloudflare WARP"),
+        ("wireguard", "WireGuard"),
+        ("mullvad", "Mullvad"),
+        ("openvpn", "OpenVPN"),
+        ("OrbStack", "OrbStack"),
+        ("com.docker", "Docker Desktop"),
+        ("ProtonVPN", "ProtonVPN"),
+        ("Cisco AnyConnect", "Cisco AnyConnect"),
+    ];
+
+    let mut seen: Vec<String> = Vec::new();
+    for line in out.lines() {
+        for (needle, pretty) in known {
+            if line.to_lowercase().contains(&needle.to_lowercase())
+                && !seen.iter().any(|s| s == pretty)
+            {
+                seen.push((*pretty).to_string());
+            }
+        }
+    }
+    seen
 }
 
 /// Pre-flight check called by commands that scan via lsof. Returns Err with a

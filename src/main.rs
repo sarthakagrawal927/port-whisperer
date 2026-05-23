@@ -47,6 +47,7 @@ fn main() {
             cmd_ps(show_all);
         }
         Some("clean") => cmd_clean(),
+        Some("doctor") => cmd_doctor(),
         Some("watch") => cmd_watch(),
         Some(port_str) => {
             if port_str.chars().all(|c| c.is_ascii_digit()) {
@@ -310,6 +311,10 @@ fn cmd_clean() {
             eprintln!("  Failed to kill PID {}.", p.pid);
         }
     }
+}
+
+fn cmd_doctor() {
+    display::print_doctor(&scanner::run_doctor());
 }
 
 fn cmd_watch() {

@@ -1,6 +1,6 @@
 [package]
 name = "port-whisperer"
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 description = "Developer-friendly port scanner with framework detection"
 license = "MIT"
