@@ -1,9 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const SUBPROC_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct PortInfo {
@@ -100,11 +104,53 @@ const PROJECT_MARKERS: &[&str] = &[
 ];
 
 fn run_cmd(cmd: &str, args: &[&str]) -> String {
-    Command::new(cmd)
+    run_cmd_timeout(cmd, args, SUBPROC_TIMEOUT)
+}
+
+/// Run a subprocess and capture stdout, killing it if it exceeds `timeout`.
+/// Returns an empty string on timeout, spawn failure, or non-zero exit.
+/// stderr is discarded. A background thread drains stdout so a chatty child
+/// can't deadlock on pipe back-pressure.
+fn run_cmd_timeout(cmd: &str, args: &[&str], timeout: Duration) -> String {
+    let mut child = match Command::new(cmd)
         .args(args)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let (tx, rx) = mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = stdout.read_to_string(&mut buf);
+            let _ = tx.send(buf);
+        });
+    }
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    // Stuck (e.g. macOS `lsof` spinning on a bad fd). Try to
+                    // kill, but don't `wait()` — an unkillable child would
+                    // hang us. Leak the handle and move on.
+                    let _ = child.kill();
+                    return String::new();
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return String::new(),
+        }
+    }
+
+    rx.recv_timeout(Duration::from_millis(200)).unwrap_or_default()
 }
 
 pub fn scan_ports(show_all: bool) -> Vec<PortInfo> {

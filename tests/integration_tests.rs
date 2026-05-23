@@ -1,9 +1,10 @@
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn ports_cmd(args: &[&str]) -> (String, String, bool) {
-    let output = Command::new("cargo")
-        .args(["run", "--release", "--"])
+    let bin = env!("CARGO_BIN_EXE_ports");
+    let output = Command::new(bin)
         .args(args)
+        .stdin(Stdio::null())
         .output()
         .expect("Failed to run ports");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
