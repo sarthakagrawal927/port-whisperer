@@ -1102,9 +1102,9 @@ fn detect_framework(
     }
 }
 
-pub fn open_in_browser(port: u16) {
+pub fn open_in_browser(port: u16) -> bool {
     let url = format!("http://localhost:{}", port);
-    Command::new("open").arg(&url).spawn().ok();
+    Command::new("open").arg(&url).spawn().is_ok()
 }
 
 

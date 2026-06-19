@@ -105,8 +105,11 @@ fn cmd_ports(show_all: bool) {
 }
 
 fn cmd_open(port: u16) {
-    scanner::open_in_browser(port);
-    println!("  Opened http://localhost:{}", port);
+    if scanner::open_in_browser(port) {
+        println!("  Opened http://localhost:{}", port);
+    } else {
+        eprintln!("  Failed to open http://localhost:{}", port);
+    }
 }
 
 fn cmd_free_many(tokens: &[String], force: bool) {
